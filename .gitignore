@@ -1,0 +1,24 @@
+# dependencies
+app/node_modules/
+node_modules/
+
+# runtime data / local state
+app/data/state.json
+app/data/state.json.*
+app/data/*.bak*
+app/data/*.log
+app/data/archive/
+app/data/legacy-*.json
+
+# wallet + secrets
+.app-wallet-home/
+.env
+.env.*
+*.env
+
+# logs
+*.log
+npm-debug.log*
+
+# misc
+.DS_Store
