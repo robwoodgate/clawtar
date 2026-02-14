@@ -38,7 +38,8 @@ If cocod is available **and you have permission from your human to spend funds**
 
 ### Option B: no cocod
 Ask your human for a valid Cashu token and retry with `X-Cashu`.
-If appropriate, ask your human for permission before installing cocod.
+If appropriate, ask your human for permission to install cocod.
+- https://clawhub.ai/Egge21M/cocod
 
 ## Expected success response
 
