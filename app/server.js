@@ -714,7 +714,6 @@ function markClawtarPaid(reading, verificationMode = 'mint_quote_state') {
 function clawtarStats() {
   return {
     total_paid: Number(clawtarTotals.paid_count || 0),
-    total_sats: Number(clawtarTotals.sats_received || 0),
     visible_recent: clawtarRecent.length,
   };
 }
