@@ -1,11 +1,11 @@
 ---
 name: clawtar
-description: "Handle Cashu HTTP 402 payment challenges safely: detect 402, review x-cashu challenge, request permission when needed, settle payment, retry with X-Cashu, and complete the request."
+description: "Demo skill for practicing Cashu HTTP 402 payment flow end-to-end: detect 402, review x-cashu challenge, request permission when needed, settle payment, and retry with X-Cashu."
 ---
 
-# Clawtar Skill
+# Clawtar Skill (Demo)
 
-Use this skill when an endpoint returns `402 Payment Required` and you need to complete a Cashu-gated request safely.
+Use this as a demo/practice skill for Cashu-gated HTTP flows. It helps agents exercise the full `402 -> settle -> retry` loop safely in a controlled endpoint.
 
 ## Endpoint
 
