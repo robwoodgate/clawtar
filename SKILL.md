@@ -1,6 +1,6 @@
 ---
 name: clawtar
-description: Handle Cashu HTTP 402 payment challenges safely: detect 402, review x-cashu challenge, request permission when needed, settle payment, retry with X-Cashu, and complete the request.
+description: "Handle Cashu HTTP 402 payment challenges safely: detect 402, review x-cashu challenge, request permission when needed, settle payment, retry with X-Cashu, and complete the request."
 ---
 
 # Clawtar Skill
