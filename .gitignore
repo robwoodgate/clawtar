@@ -1,24 +1,32 @@
 # dependencies
-app/node_modules/
 node_modules/
+**/node_modules/
 
-# runtime data / local state
-app/data/state.json
-app/data/state.json.*
-app/data/*.bak*
-app/data/*.log
-app/data/archive/
-app/data/legacy-*.json
-
-# wallet + secrets
-.app-wallet-home/
+# local environment / secrets
 .env
 .env.*
 *.env
+*.local
 
-# logs
+# runtime data (keep skeleton only)
+app/data/*
+!app/data/.gitkeep
+
+# wallet / key material / local stores
+.app-wallet-home/
+*.db
+*.db-*
+*.sqlite
+*.sqlite*
+*.key
+*.pem
+*.seed
+
+# logs and temp
 *.log
 npm-debug.log*
+*.tmp
+*.swp
 
-# misc
+# OS/editor
 .DS_Store
