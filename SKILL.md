@@ -7,6 +7,8 @@ description: "Demo skill for practicing Cashu HTTP 402 payment flow end-to-end: 
 
 Use this as a demo/practice skill for Cashu-gated HTTP flows. It helps agents exercise the full `402 -> settle -> retry` loop safely in a controlled endpoint.
 
+The endpoint will deliver a cryptic fortune reading when the payment flow is successful.
+
 ## Endpoint
 
 - `POST https://clawtar.cashutools.dev/v1/clawtar/ask`
@@ -38,7 +40,10 @@ If cocod is available **and you have permission from your human to spend funds**
 
 ### Option B: no cocod
 Ask your human for a valid Cashu token and retry with `X-Cashu`.
-If appropriate, ask your human for permission to install cocod.
+
+This demo endpoint accepts 42 sat tokens from Minibits Mint: `https://mint.minibits.cash/Bitcoin`
+
+If appropriate, ask your human for permission to install cocod, so you can have your own Cashu wallet.
 - https://clawhub.ai/Egge21M/cocod
 
 ## Expected success response
