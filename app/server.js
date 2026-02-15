@@ -23,6 +23,7 @@ const DATA_FILE = process.env.DATA_FILE || path.join(DATA_DIR, 'state.json');
 // Cashu + wallet tooling
 const MINT_BASE_URL = process.env.MINT_BASE_URL || 'https://mint.minibits.cash/Bitcoin';
 const MINT_UNIT = process.env.MINT_UNIT || 'sat';
+const ALLOWED_MINT_URLS_RAW = (process.env.ALLOWED_MINT_URLS || '').trim();
 const COCOD_BIN = process.env.COCOD_BIN || '/home/openclaw/.bun/bin/cocod';
 const BUN_BIN = process.env.BUN_BIN || '/home/openclaw/.bun/bin/bun';
 
@@ -50,6 +51,18 @@ function recomputeTotalsFromLedger() {
     sats_received: receives.reduce((sum, x) => sum + (Number(x?.amount_sats) || 0), 0),
   };
 }
+
+function normalizeMintUrl(url) {
+  // Per NUT-00, mint URLs MUST be normalized by stripping any trailing slashes.
+  return String(url || '').trim().replace(/\/+$/, '');
+}
+
+const ALLOWED_MINT_URLS = (ALLOWED_MINT_URLS_RAW
+  ? ALLOWED_MINT_URLS_RAW.split(',')
+  : [MINT_BASE_URL]
+)
+  .map(normalizeMintUrl)
+  .filter(Boolean);
 
 function saveState() {
   ensureDataDir();
@@ -153,14 +166,13 @@ function precheckCashuTokenOrThrow(proofToken) {
   const meta = getTokenMetadata(proofToken);
 
   const amount = Number(meta?.amount || 0);
-  const mint = String(meta?.mint || '').trim();
+  const mint = normalizeMintUrl(meta?.mint);
 
   if (!mint) {
     throw new Error('token missing mint metadata');
   }
 
-  // Clawtar is currently single-mint. (We can expand to allowlist later.)
-  if (mint !== MINT_BASE_URL) {
+  if (!ALLOWED_MINT_URLS.includes(mint)) {
     throw new Error(`unsupported mint (${mint})`);
   }
 
