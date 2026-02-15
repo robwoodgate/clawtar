@@ -621,7 +621,7 @@ app.post('/v1/clawtar/ask', async (req, res) => {
       `clawtar:${crypto.randomUUID()}`,
       CLAWTAR_PRICE_SATS,
       MINT_UNIT,
-      [MINT_BASE_URL],
+      ALLOWED_MINT_URLS,
       'clawtar:agent',
     ).toEncodedCreqA();
 
