@@ -103,10 +103,18 @@ function escapeHtml(s) {
 }
 
 function runCocod(args, timeout = 20000) {
+  // cocod may shell out to `bun` (e.g. to start/stop its daemon). Ensure bun is on PATH.
+  const bunDir = path.dirname(BUN_BIN);
+  const env = {
+    ...process.env,
+    PATH: `${bunDir}:${process.env.PATH || ''}`,
+  };
+
   return execFileSync(BUN_BIN, [COCOD_BIN, ...args], {
     encoding: 'utf8',
     timeout,
     stdio: ['ignore', 'pipe', 'pipe'],
+    env,
   }).trim();
 }
 
