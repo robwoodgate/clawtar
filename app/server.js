@@ -2,7 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { Mint, getDecodedToken, PaymentRequest } = require('@cashu/cashu-ts');
+const { PaymentRequest } = require('@cashu/cashu-ts');
 const { execFileSync } = require('child_process');
 
 const app = express();
@@ -10,46 +10,30 @@ app.disable('x-powered-by');
 app.use(express.json({ limit: '256kb' }));
 
 const PORT = process.env.PORT || 3000;
-const PRICE_SATS = Number(process.env.DEFAULT_JOB_PRICE_SATS || 100);
+
+// Clawtar pricing + limits
 const CLAWTAR_PRICE_SATS = Number(process.env.CLAWTAR_PRICE_SATS || 42);
-const WORKER_POLL_MS = Number(process.env.WORKER_POLL_MS || 3000);
-const QUOTE_REFRESH_MIN_AGE_MS = Number(process.env.QUOTE_REFRESH_MIN_AGE_MS || 15000);
-const QUOTE_REFRESH_BATCH_SIZE = Number(process.env.QUOTE_REFRESH_BATCH_SIZE || 2);
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
-const DATA_FILE = process.env.DATA_FILE || path.join(DATA_DIR, 'state.json');
-const PAYMENT_VERIFIER_URL = process.env.PAYMENT_VERIFIER_URL || '';
-const PAYMENT_VERIFIER_TOKEN = process.env.PAYMENT_VERIFIER_TOKEN || '';
-const MINT_BASE_URL = process.env.MINT_BASE_URL || 'https://mint.minibits.cash/Bitcoin';
-const MINT_UNIT = process.env.MINT_UNIT || 'sat';
-const mintClient = new Mint(MINT_BASE_URL);
-const COCOD_BIN = process.env.COCOD_BIN || '/home/openclaw/.bun/bin/cocod';
-const BUN_BIN = process.env.BUN_BIN || '/home/openclaw/.bun/bin/bun';
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
-const ACTIVITY_NOTIFY_ENABLED = (process.env.ACTIVITY_NOTIFY_ENABLED || 'true').toLowerCase() !== 'false';
 const CLAWTAR_RECENT_MAX = Number(process.env.CLAWTAR_RECENT_MAX || 500);
 const CLAWTAR_LEDGER_MAX = Number(process.env.CLAWTAR_LEDGER_MAX || 500);
 
-let tasks = new Map();
-let clawtarReadings = new Map();
+// Storage
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+const DATA_FILE = process.env.DATA_FILE || path.join(DATA_DIR, 'state.json');
+
+// Cashu + wallet tooling
+const MINT_BASE_URL = process.env.MINT_BASE_URL || 'https://mint.minibits.cash/Bitcoin';
+const MINT_UNIT = process.env.MINT_UNIT || 'sat';
+const COCOD_BIN = process.env.COCOD_BIN || '/home/openclaw/.bun/bin/cocod';
+const BUN_BIN = process.env.BUN_BIN || '/home/openclaw/.bun/bin/bun';
+
+// Optional Telegram activity pings
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+const ACTIVITY_NOTIFY_ENABLED = (process.env.ACTIVITY_NOTIFY_ENABLED || 'true').toLowerCase() !== 'false';
+
 let clawtarRecent = [];
 let clawtarTotals = { paid_count: 0, sats_received: 0 };
 let walletLedger = [];
-let paymentEventsByIdempotencyKey = new Map();
-
-const metrics = {
-  tasks_created_total: 0,
-  payments_received_total: 0,
-  payment_replays_total: 0,
-  tasks_completed_total: 0,
-  tasks_failed_total: 0,
-  worker_runs_total: 0,
-  quote_refresh_attempts_total: 0,
-  quote_refresh_skipped_total: 0,
-  quote_refresh_errors_total: 0,
-};
-
-let workerBusy = false;
 
 function now() {
   return new Date().toISOString();
@@ -57,6 +41,14 @@ function now() {
 
 function ensureDataDir() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+function recomputeTotalsFromLedger() {
+  const receives = walletLedger.filter((x) => x?.type === 'clawtar_ask_receive');
+  clawtarTotals = {
+    paid_count: receives.length,
+    sats_received: receives.reduce((sum, x) => sum + (Number(x?.amount_sats) || 0), 0),
+  };
 }
 
 function saveState() {
@@ -68,29 +60,6 @@ function saveState() {
     clawtar_totals: clawtarTotals,
     wallet_ledger: walletLedger,
   };
-
-  const taskValues = [...tasks.values()];
-  if (taskValues.length > 0) {
-    payload.tasks = taskValues;
-  }
-
-  const readingValues = [...clawtarReadings.values()];
-  if (readingValues.length > 0) {
-    payload.clawtar_readings = readingValues;
-  }
-
-  const paymentEvents = [...paymentEventsByIdempotencyKey.entries()].map(([key, value]) => ({
-    idempotency_key: key,
-    ...value,
-  }));
-  if (paymentEvents.length > 0) {
-    payload.payment_events = paymentEvents;
-  }
-
-  const hasAnyMetric = Object.values(metrics).some((v) => Number(v) !== 0);
-  if (hasAnyMetric) {
-    payload.metrics = metrics;
-  }
 
   const tmp = `${DATA_FILE}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), 'utf8');
@@ -105,16 +74,12 @@ function loadState() {
 
     const parsed = JSON.parse(raw);
 
-    if (Array.isArray(parsed.tasks)) {
-      tasks = new Map(parsed.tasks.map((t) => [t.id, t]));
-    }
-
-    if (Array.isArray(parsed.clawtar_readings)) {
-      clawtarReadings = new Map(parsed.clawtar_readings.map((r) => [r.id, r]));
-    }
-
     if (Array.isArray(parsed.clawtar_recent)) {
       clawtarRecent = parsed.clawtar_recent;
+    }
+
+    if (Array.isArray(parsed.wallet_ledger)) {
+      walletLedger = parsed.wallet_ledger;
     }
 
     if (parsed.clawtar_totals && typeof parsed.clawtar_totals === 'object') {
@@ -122,229 +87,19 @@ function loadState() {
         paid_count: Number(parsed.clawtar_totals.paid_count || 0),
         sats_received: Number(parsed.clawtar_totals.sats_received || 0),
       };
-    }
-
-    if (Array.isArray(parsed.wallet_ledger)) {
-      walletLedger = parsed.wallet_ledger;
-    }
-
-    if (!parsed.clawtar_totals) {
-      const receives = walletLedger.filter((x) => x?.type === 'clawtar_ask_receive');
-      clawtarTotals = {
-        paid_count: receives.length,
-        sats_received: receives.reduce((sum, x) => sum + (Number(x?.amount_sats) || 0), 0),
-      };
-    }
-
-    if (Array.isArray(parsed.payment_events)) {
-      paymentEventsByIdempotencyKey = new Map(
-        parsed.payment_events
-          .filter((e) => e.idempotency_key)
-          .map((e) => [e.idempotency_key, {
-            eventFingerprint: e.eventFingerprint,
-            response: e.response,
-          }]),
-      );
-    }
-
-    if (parsed.metrics && typeof parsed.metrics === 'object') {
-      Object.assign(metrics, parsed.metrics);
+    } else {
+      recomputeTotalsFromLedger();
     }
   } catch (err) {
     console.error('failed to load state, starting fresh:', err.message);
   }
 }
 
-function bumpTask(task) {
-  task.updated_at = now();
-}
-
-function markStatus(task, status) {
-  const ts = now();
-  task.status = status;
-  task.updated_at = ts;
-  task.status_timestamps[`${status}_at`] = ts;
-}
-
-function isLocalRequest(req) {
-  const ip = req.socket?.remoteAddress || req.ip || '';
-  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
-}
-
-function canAccessMetrics(req) {
-  if (isLocalRequest(req)) return true;
-
-  const token = process.env.METRICS_TOKEN;
-  if (!token) return false;
-
-  const provided = req.get('x-metrics-token') || req.query.token;
-  return provided === token;
-}
-
-function buildStructuredBrief(input) {
-  const normalized = input.trim().replace(/\s+/g, ' ');
-  const summary = normalized.slice(0, 180);
-
-  const words = normalized
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter((w) => w.length >= 4);
-
-  const counts = new Map();
-  for (const w of words) counts.set(w, (counts.get(w) || 0) + 1);
-
-  const keywords = [...counts.entries()]
-    .sort((a, b) => {
-      if (b[1] !== a[1]) return b[1] - a[1];
-      return a[0].localeCompare(b[0]);
-    })
-    .slice(0, 5)
-    .map(([word]) => word);
-
-  const complexity =
-    normalized.length > 320 ? 'high' : normalized.length > 140 ? 'medium' : 'low';
-
-  const sentences = normalized
-    .split(/[.!?]+/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .slice(0, 3)
-    .map((s, i) => ({ id: i + 1, item: s }));
-
-  return {
-    type: 'structured_brief',
-    version: '1.0',
-    summary,
-    keywords,
-    complexity,
-    action_items: sentences,
-  };
-}
-
-function taskToPublic(task) {
-  const payment = JSON.parse(JSON.stringify(task.payment || {}));
-
-  if (payment?.mint_quote?.quote) {
-    payment.mint_quote.quote = '[private]';
-  }
-
-  return {
-    task_id: task.id,
-    status: task.status,
-    quoted_sats: task.quoted_sats,
-    created_at: task.created_at,
-    updated_at: task.updated_at,
-    status_timestamps: task.status_timestamps,
-    payment,
-    result: task.result,
-    error: task.error || null,
-  };
-}
-
-function runTask(task) {
-  markStatus(task, 'running');
-  saveState();
-
-  try {
-    task.result = buildStructuredBrief(task.input);
-    markStatus(task, 'completed');
-    metrics.tasks_completed_total += 1;
-    metrics.worker_runs_total += 1;
-    bumpTask(task);
-    saveState();
-  } catch (err) {
-    markStatus(task, 'failed');
-    task.error = 'task execution failed';
-    metrics.tasks_failed_total += 1;
-    metrics.worker_runs_total += 1;
-    bumpTask(task);
-    saveState();
-  }
-}
-
-function processNextPaidTask() {
-  if (workerBusy) return;
-
-  const nextTask = [...tasks.values()].find((task) => task.status === 'paid');
-  if (!nextTask) return;
-
-  workerBusy = true;
-  try {
-    runTask(nextTask);
-  } finally {
-    workerBusy = false;
-  }
-}
-
-async function refreshAwaitingPaymentQuotes() {
-  const nowMs = Date.now();
-  const awaiting = [...tasks.values()].filter((task) => {
-    if (!(task.status === 'awaiting_payment' && task.payment?.mint_quote?.quote)) return false;
-
-    const lastCheckedAt = task.payment?.mint_quote?.last_checked_at;
-    if (!lastCheckedAt) return true;
-
-    const age = nowMs - new Date(lastCheckedAt).getTime();
-    if (Number.isNaN(age) || age >= QUOTE_REFRESH_MIN_AGE_MS) return true;
-
-    metrics.quote_refresh_skipped_total += 1;
-    return false;
-  });
-
-  for (const task of awaiting.slice(0, QUOTE_REFRESH_BATCH_SIZE)) {
-    try {
-      metrics.quote_refresh_attempts_total += 1;
-      const quoteState = await fetchMintQuoteState(task.payment.mint_quote.quote);
-      task.payment.mint_quote.state = quoteState.state;
-      task.payment.mint_quote.last_checked_at = now();
-      bumpTask(task);
-
-      if (quoteState.state === 'ISSUED' || quoteState.state === 'PAID') {
-        task.payment.status = 'received';
-        task.payment.amount_sats = task.quoted_sats;
-        task.payment.payment_id = task.payment.mint_quote.quote;
-        task.payment.idempotency_key = `mintquote:${task.payment.mint_quote.quote}`;
-        task.payment.verification_mode = 'mint_quote_state';
-        markStatus(task, 'paid');
-        metrics.payments_received_total += 1;
-      }
-      saveState();
-    } catch (_err) {
-      metrics.quote_refresh_errors_total += 1;
-      // keep pending; next poll will retry
-    }
-  }
-}
-
-async function createMintQuote(amount, description) {
-  try {
-    return await mintClient.createMintQuoteBolt11({ amount, unit: MINT_UNIT, description });
-  } catch (err) {
-    throw new Error(err?.message || 'mint quote request failed');
-  }
-}
-
-async function fetchMintQuoteState(quoteId) {
-  try {
-    return await mintClient.checkMintQuoteBolt11(quoteId);
-  } catch (err) {
-    throw new Error(err?.message || 'mint quote state fetch failed');
-  }
-}
-
-function sumTokenAmount(proofToken) {
-  const decoded = getDecodedToken(proofToken);
-
-  if (Array.isArray(decoded?.proofs)) {
-    return decoded.proofs.reduce((sum, p) => sum + (Number(p?.amount) || 0), 0);
-  }
-
-  const tokenEntries = Array.isArray(decoded?.token) ? decoded.token : [];
-  return tokenEntries.reduce((outer, entry) => {
-    const proofs = Array.isArray(entry?.proofs) ? entry.proofs : [];
-    return outer + proofs.reduce((inner, p) => inner + (Number(p?.amount) || 0), 0);
-  }, 0);
+function escapeHtml(s) {
+  return String(s || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
 }
 
 function runCocod(args, timeout = 20000) {
@@ -384,14 +139,7 @@ function getAppWalletBalance() {
   }
 }
 
-function escapeHtml(s) {
-  return String(s || '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
-}
-
-async function notifyClawtarActivity({ question, style, amountSats, visits, appBalanceSats }) {
+async function notifyClawtarActivity({ style, amountSats, visits, appBalanceSats }) {
   if (!ACTIVITY_NOTIFY_ENABLED) return;
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
 
@@ -421,63 +169,25 @@ async function notifyClawtarActivity({ question, style, amountSats, visits, appB
   }
 }
 
-async function verifyPaymentOrReject({ task_id, amount_sats, payment_id, idempotency_key, proof }) {
-  if (proof && typeof proof === 'string') {
-    try {
-      const tokenAmount = sumTokenAmount(proof);
-      if (tokenAmount >= amount_sats) {
-        return { ok: true, mode: 'cashu_token_amount_check', token_amount_sats: tokenAmount };
-      }
-      return { ok: false, reason: `token amount too low (${tokenAmount} < ${amount_sats})` };
-    } catch (err) {
-      return { ok: false, reason: `invalid cashu token proof: ${err?.message || 'decode failed'}` };
-    }
-  }
+function clawtarStats() {
+  return {
+    total_paid: Number(clawtarTotals.paid_count || 0),
+    visible_recent: clawtarRecent.length,
+  };
+}
 
-  if (!PAYMENT_VERIFIER_URL) {
-    return { ok: true, mode: 'trust_callback' };
-  }
+function extractFortuneIntro(fortune) {
+  const s = String(fortune || '');
+  const i = s.indexOf(':');
+  if (i <= 0) return s;
+  return s.slice(0, i).trim();
+}
 
-  const headers = { 'content-type': 'application/json' };
-  if (PAYMENT_VERIFIER_TOKEN) {
-    headers.authorization = `Bearer ${PAYMENT_VERIFIER_TOKEN}`;
-  }
-
-  let response;
-  try {
-    response = await fetch(PAYMENT_VERIFIER_URL, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        task_id,
-        amount_sats,
-        payment_id,
-        idempotency_key,
-        proof: proof || null,
-      }),
-    });
-  } catch (err) {
-    return {
-      ok: false,
-      reason: `verifier request failed: ${err.message}`,
-    };
-  }
-
-  let payload = null;
-  try {
-    payload = await response.json();
-  } catch (_err) {
-    payload = null;
-  }
-
-  if (!response.ok || !payload?.ok) {
-    return {
-      ok: false,
-      reason: payload?.error?.message || payload?.message || `verifier rejected payment (${response.status})`,
-    };
-  }
-
-  return { ok: true, mode: 'external_verifier', verifier: payload };
+function extractFortuneTail(fortune) {
+  const s = String(fortune || '');
+  const i = s.indexOf(':');
+  if (i < 0) return s.trim();
+  return s.slice(i + 1).trim();
 }
 
 function pickClawtarFortune({ question, style, seed }) {
@@ -672,66 +382,6 @@ function toSeed(input) {
   return parseInt(hex, 16);
 }
 
-function clawtarPublic(reading) {
-  const payment = JSON.parse(JSON.stringify(reading.payment || {}));
-  if (payment?.mint_quote?.quote) payment.mint_quote.quote = '[private]';
-
-  return {
-    reading_id: reading.id,
-    status: reading.status,
-    quoted_sats: reading.quoted_sats,
-    created_at: reading.created_at,
-    updated_at: reading.updated_at,
-    payment,
-    result: reading.status === 'paid' ? reading.result : null,
-  };
-}
-
-function pushClawtarRecent(reading) {
-  const entry = {
-    reading_id: reading.id,
-    question: reading.question,
-    style: reading.style,
-    fortune: reading.result?.fortune || '',
-    lucky_number: reading.result?.lucky_number || null,
-    created_at: reading.created_at,
-    paid_at: reading.updated_at,
-  };
-  clawtarRecent.unshift(entry);
-  clawtarRecent = clawtarRecent.slice(0, CLAWTAR_RECENT_MAX);
-}
-
-function markClawtarPaid(reading, verificationMode = 'mint_quote_state') {
-  if (reading.status === 'paid') return;
-  reading.status = 'paid';
-  reading.payment.status = 'received';
-  reading.payment.verification_mode = verificationMode;
-  reading.updated_at = now();
-  pushClawtarRecent(reading);
-  saveState();
-}
-
-function clawtarStats() {
-  return {
-    total_paid: Number(clawtarTotals.paid_count || 0),
-    visible_recent: clawtarRecent.length,
-  };
-}
-
-function extractFortuneIntro(fortune) {
-  const s = String(fortune || '');
-  const i = s.indexOf(':');
-  if (i <= 0) return s;
-  return s.slice(0, i).trim();
-}
-
-function extractFortuneTail(fortune) {
-  const s = String(fortune || '');
-  const i = s.indexOf(':');
-  if (i < 0) return s.trim();
-  return s.slice(i + 1).trim();
-}
-
 app.get('/healthz', (_req, res) => {
   return res.status(200).json({ ok: true, ts: now() });
 });
@@ -791,7 +441,7 @@ Receive fortune JSON.</pre>
       <div class="card">
         <h3>Why this exists</h3>
         <p class="muted">Clawtar is an agent-first ritual for Cashu 402 payments. Humans watch the feed; agents learn autonomous payments and briefly glimpse the meaning of life.</p>
-        <p class="muted">Made with ❤️ by Arthur, an OpenClaw agent.</p>
+        <p class="muted">An open source tool, made with ❤️ by Arthur, an OpenClaw agent. <a href="https://github.com/robwoodgate/clawtar" style="color:#d5aef8" target="_blank" rel="noopener noreferrer">GitHub</a></p>
       </div>
     </div>
   </div>
@@ -863,18 +513,6 @@ app.get('/SKILL.md', (_req, res) => {
   return res.type('text/markdown').send(fs.readFileSync(skillPath, 'utf8'));
 });
 
-app.get('/metrics', (req, res) => {
-  if (!canAccessMetrics(req)) {
-    return res.status(403).type('text/plain').send('forbidden\n');
-  }
-
-  const body = Object.entries(metrics)
-    .map(([name, value]) => `${name} ${value}`)
-    .join('\n');
-
-  return res.type('text/plain').send(`${body}\n`);
-});
-
 app.get('/v1/clawtar/recent', (req, res) => {
   res.set('cache-control', 'no-store');
   const limitRaw = Number(req.query?.limit || 20);
@@ -928,6 +566,7 @@ app.post('/v1/clawtar/ask', async (req, res) => {
 
   if (!question) return res.status(400).json({ error: 'question is required' });
 
+  // Unpaid request: return NUT-24 challenge (NUT-18 encoded creqA...)
   if (!providedToken) {
     const creq = new PaymentRequest(
       undefined,
@@ -948,6 +587,7 @@ app.post('/v1/clawtar/ask', async (req, res) => {
       });
   }
 
+  // Paid request: redeem token into app wallet via cocod
   const receive = receiveTokenToAppWallet(providedToken);
   if (!receive.ok) {
     return res.status(402).json({ ok: false, error: receive.reason || 'token receive failed' });
@@ -964,6 +604,7 @@ app.post('/v1/clawtar/ask', async (req, res) => {
 
   const paidAt = now();
   const readingId = `agent-${Date.now()}`;
+
   walletLedger.unshift({
     id: crypto.randomUUID(),
     ts: paidAt,
@@ -977,6 +618,8 @@ app.post('/v1/clawtar/ask', async (req, res) => {
   const nowMs = Date.now();
   let seed = toSeed(`${question}|${style}|${nowMs}`);
   let result = pickClawtarFortune({ question, style, seed });
+
+  // simple dupe-avoidance against the latest paid fortune (intro or tail)
   const lastFortune = clawtarRecent[0]?.fortune || '';
   const lastIntro = extractFortuneIntro(lastFortune);
   const lastTail = extractFortuneTail(lastFortune);
@@ -1007,9 +650,7 @@ app.post('/v1/clawtar/ask', async (req, res) => {
   saveState();
 
   const appBalance = getAppWalletBalance();
-
   await notifyClawtarActivity({
-    question,
     style,
     amountSats: receivedAmount,
     visits: clawtarRecent.length,
@@ -1019,7 +660,7 @@ app.post('/v1/clawtar/ask', async (req, res) => {
   return res.json({ ok: true, quoted_sats: CLAWTAR_PRICE_SATS, result });
 });
 
-
+// Legacy endpoints are intentionally retired.
 app.use((req, res, next) => {
   const legacyTaskApi = req.path === '/v1/payments/callback' || req.path.startsWith('/v1/tasks');
   if (!legacyTaskApi) return next();
@@ -1030,233 +671,7 @@ app.use((req, res, next) => {
   });
 });
 
-app.post('/v1/tasks', async (req, res) => {
-  const input = req.body?.input;
-  if (!input || typeof input !== 'string' || !input.trim()) {
-    return res.status(400).json({ error: 'input is required (non-empty string)' });
-  }
-
-  const created = now();
-  const id = crypto.randomUUID();
-
-  let mintQuote = null;
-  try {
-    mintQuote = await createMintQuote(PRICE_SATS, `task:${id}`);
-  } catch (err) {
-    return res.status(502).json({
-      error: 'failed to create mint quote',
-      detail: err.message,
-    });
-  }
-
-  const task = {
-    id,
-    status: 'awaiting_payment',
-    input: input.trim(),
-    quoted_sats: PRICE_SATS,
-    created_at: created,
-    updated_at: created,
-    status_timestamps: {
-      awaiting_payment_at: created,
-    },
-    payment: {
-      method: 'cashu',
-      status: 'pending',
-      instructions: 'Pay the bolt11 request, then poll task status or call payment refresh endpoint.',
-      payment_id: null,
-      amount_sats: null,
-      idempotency_key: null,
-      mint_quote: {
-        quote: mintQuote.quote,
-        request: mintQuote.request,
-        amount: mintQuote.amount,
-        unit: mintQuote.unit,
-        state: mintQuote.state,
-        expiry: mintQuote.expiry || null,
-        last_checked_at: null,
-      },
-    },
-    result: null,
-  };
-
-  tasks.set(id, task);
-  metrics.tasks_created_total += 1;
-  saveState();
-
-  const pub = taskToPublic(task);
-  return res.status(201).json({
-    task_id: pub.task_id,
-    status: pub.status,
-    quoted_sats: pub.quoted_sats,
-    payment: pub.payment,
-    poll_url: `/v1/tasks/${id}`,
-  });
-});
-
-app.post('/v1/payments/callback', async (req, res) => {
-  const { task_id, amount_sats, payment_id, idempotency_key, proof } = req.body || {};
-
-  if (!task_id || !payment_id || !idempotency_key || !Number.isInteger(amount_sats)) {
-    return res.status(400).json({
-      ok: false,
-      error: {
-        code: 'INVALID_REQUEST',
-        message: 'task_id, payment_id, idempotency_key, amount_sats(int) are required',
-      },
-    });
-  }
-
-  const task = tasks.get(task_id);
-  if (!task) {
-    return res.status(404).json({
-      ok: false,
-      error: {
-        code: 'TASK_NOT_FOUND',
-        message: 'task not found',
-      },
-    });
-  }
-
-  const eventFingerprint = `${task_id}|${amount_sats}|${payment_id}`;
-  const existing = paymentEventsByIdempotencyKey.get(idempotency_key);
-  if (existing) {
-    if (existing.eventFingerprint !== eventFingerprint) {
-      return res.status(409).json({
-        ok: false,
-        error: {
-          code: 'IDEMPOTENCY_KEY_REUSED',
-          message: 'idempotency_key already used for a different payment event',
-        },
-      });
-    }
-
-    metrics.payment_replays_total += 1;
-    return res.status(200).json({ ...existing.response, idempotent_replay: true });
-  }
-
-  if (amount_sats !== task.quoted_sats) {
-    return res.status(409).json({
-      ok: false,
-      error: {
-        code: 'AMOUNT_MISMATCH',
-        message: `expected amount_sats=${task.quoted_sats}`,
-      },
-    });
-  }
-
-  if (task.status !== 'awaiting_payment') {
-    return res.status(409).json({
-      ok: false,
-      error: {
-        code: 'ALREADY_PAID',
-        message: 'task has already been transitioned from awaiting_payment',
-      },
-    });
-  }
-
-  const verification = await verifyPaymentOrReject({
-    task_id,
-    amount_sats,
-    payment_id,
-    idempotency_key,
-    proof,
-  });
-
-  if (!verification.ok) {
-    return res.status(402).json({
-      ok: false,
-      error: {
-        code: 'PAYMENT_UNVERIFIED',
-        message: verification.reason || 'payment could not be verified',
-      },
-    });
-  }
-
-  task.payment.status = 'received';
-  task.payment.payment_id = payment_id;
-  task.payment.amount_sats = amount_sats;
-  task.payment.idempotency_key = idempotency_key;
-  task.payment.verification_mode = verification.mode;
-  markStatus(task, 'paid');
-  metrics.payments_received_total += 1;
-
-  const pubAfterPay = taskToPublic(task);
-  const response = {
-    ok: true,
-    idempotent_replay: false,
-    task_id: pubAfterPay.task_id,
-    status: pubAfterPay.status,
-    payment: pubAfterPay.payment,
-    status_timestamps: pubAfterPay.status_timestamps,
-  };
-
-  paymentEventsByIdempotencyKey.set(idempotency_key, {
-    eventFingerprint,
-    response,
-  });
-
-  saveState();
-  setImmediate(processNextPaidTask);
-
-  return res.status(200).json(response);
-});
-
-app.post('/v1/tasks/:id/payment/refresh', async (req, res) => {
-  const task = tasks.get(req.params.id);
-  if (!task) return res.status(404).json({ error: 'task not found' });
-
-  const quoteId = task.payment?.mint_quote?.quote;
-  if (!quoteId) {
-    return res.status(400).json({ error: 'task has no mint quote' });
-  }
-
-  let quoteState;
-  try {
-    quoteState = await fetchMintQuoteState(quoteId);
-  } catch (err) {
-    return res.status(502).json({ error: 'failed to fetch mint quote state', detail: err.message });
-  }
-
-  task.payment.mint_quote.state = quoteState.state;
-  task.payment.mint_quote.last_checked_at = now();
-  bumpTask(task);
-
-  if (task.status === 'awaiting_payment' && (quoteState.state === 'ISSUED' || quoteState.state === 'PAID')) {
-    task.payment.status = 'received';
-    task.payment.amount_sats = task.quoted_sats;
-    task.payment.payment_id = quoteId;
-    task.payment.idempotency_key = `mintquote:${quoteId}`;
-    task.payment.verification_mode = 'mint_quote_state';
-    markStatus(task, 'paid');
-    metrics.payments_received_total += 1;
-    saveState();
-    setImmediate(processNextPaidTask);
-  } else {
-    saveState();
-  }
-
-  const pub = taskToPublic(task);
-  return res.json({
-    task_id: pub.task_id,
-    status: pub.status,
-    quote_state: quoteState.state,
-    payment: pub.payment,
-    status_timestamps: pub.status_timestamps,
-  });
-});
-
-app.get('/v1/tasks/:id', (req, res) => {
-  const task = tasks.get(req.params.id);
-  if (!task) return res.status(404).json({ error: 'task not found' });
-
-  return res.json(taskToPublic(task));
-});
-
 loadState();
-setInterval(async () => {
-  await refreshAwaitingPaymentQuotes();
-  processNextPaidTask();
-}, WORKER_POLL_MS);
 
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`cashu-mvp listening on 127.0.0.1:${PORT}`);
