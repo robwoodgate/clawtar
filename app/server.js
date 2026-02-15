@@ -2,7 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { PaymentRequest } = require('@cashu/cashu-ts');
+const { PaymentRequest, getTokenMetadata } = require('@cashu/cashu-ts');
 const { execFileSync } = require('child_process');
 
 const app = express();
@@ -145,6 +145,34 @@ function getAppWalletBalance() {
   } catch (err) {
     return { ok: false, error: err?.message || 'balance check failed' };
   }
+}
+
+function precheckCashuTokenOrThrow(proofToken) {
+  // Fast local checks only (no mint calls): reject obviously-invalid tokens
+  // before we try to redeem via cocod.
+  const meta = getTokenMetadata(proofToken);
+
+  const amount = Number(meta?.amount || 0);
+  const mint = String(meta?.mint || '').trim();
+
+  if (!mint) {
+    throw new Error('token missing mint metadata');
+  }
+
+  // Clawtar is currently single-mint. (We can expand to allowlist later.)
+  if (mint !== MINT_BASE_URL) {
+    throw new Error(`unsupported mint (${mint})`);
+  }
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error('token amount metadata invalid');
+  }
+
+  if (amount < CLAWTAR_PRICE_SATS) {
+    throw new Error(`token amount too low (${amount} < ${CLAWTAR_PRICE_SATS})`);
+  }
+
+  return meta;
 }
 
 async function notifyClawtarActivity({ style, amountSats, visits, appBalanceSats }) {
@@ -595,7 +623,14 @@ app.post('/v1/clawtar/ask', async (req, res) => {
       });
   }
 
-  // Paid request: redeem token into app wallet via cocod
+  // Paid request: fast local token pre-check (mint + amount) before redeeming via cocod
+  try {
+    precheckCashuTokenOrThrow(providedToken);
+  } catch (err) {
+    return res.status(402).json({ ok: false, error: err?.message || 'invalid token' });
+  }
+
+  // Redeem token into app wallet via cocod
   const receive = receiveTokenToAppWallet(providedToken);
   if (!receive.ok) {
     return res.status(402).json({ ok: false, error: receive.reason || 'token receive failed' });
