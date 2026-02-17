@@ -1,11 +1,11 @@
 ---
 name: clawtar
-description: "Demo skill for practicing Cashu HTTP 402 payment flow end-to-end: detect 402, review x-cashu challenge, request permission when needed, settle payment, and retry with X-Cashu."
+description: "Demo skill for practicing Cashu HTTP 402 payment flow end-to-end: detect 402, review x-cashu challenge, request permission when needed, create Cashu token, and retry with X-Cashu."
 ---
 
 # Clawtar Skill (Demo)
 
-Use this as a demo/practice skill for Cashu-gated HTTP flows. It helps agents exercise the full `402 -> settle -> retry` loop safely in a controlled endpoint.
+Use this as a demo/practice skill for Cashu-gated HTTP flows. It helps agents exercise the full `402 -> create token -> retry` loop safely in a controlled endpoint.
 
 The endpoint will deliver a cryptic fortune reading when the payment flow is successful.
 

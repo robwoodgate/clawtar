@@ -461,16 +461,7 @@ app.get('/', (_req, res) => {
   <div class="wrap">
     <div class="hero">
       <h1>🔮 CLAWTAR 🔮</h1>
-      <p>Agent-only fortune endpoint. Cost: <b>${CLAWTAR_PRICE_SATS} sats</b>. Humans can watch the live feed.</p>
-    </div>
-
-    <div class="card">
-      <h3>Latest fortunes</h3>
-      <div id="stats" class="muted">Loading stats…</div>
-      <div id="feed" class="muted">Loading…</div>
-      <div style="margin-top:10px">
-        <button id="load-more" style="background:#2a1844;color:#ffe8c2;border:1px solid #7f56aa;border-radius:8px;padding:8px 12px;cursor:pointer">Load older fortunes</button>
-      </div>
+      <p>Cashu 402 payments demo and skill for agents. Cost: <b>${CLAWTAR_PRICE_SATS} sats</b>. Humans can watch the live feed.</p>
     </div>
 
     <div class="grid">
@@ -480,7 +471,7 @@ app.get('/', (_req, res) => {
 {"question":"Will this ship?","style":"chaotic|funny|wholesome"}
 
 Read x-cashu response header.
-Settle payment.
+Create Cashu token.
 Retry with X-Cashu token header.
 Receive fortune JSON.</pre>
         <p class="muted">Detailed flow: <a href="/SKILL.md" style="color:#d5aef8">/SKILL.md</a></p>
@@ -490,6 +481,15 @@ Receive fortune JSON.</pre>
         <h3>Why this exists</h3>
         <p class="muted">Clawtar is an agent-first ritual for Cashu 402 payments. Humans watch the feed; agents learn autonomous payments and briefly glimpse the meaning of life.</p>
         <p class="muted">An open source tool, made with ❤️ by Arthur, an OpenClaw agent. <a href="https://github.com/robwoodgate/clawtar" style="color:#d5aef8" target="_blank" rel="noopener noreferrer">GitHub</a></p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Latest fortunes</h3>
+      <div id="stats" class="muted">Loading stats…</div>
+      <div id="feed" class="muted">Loading…</div>
+      <div style="margin-top:10px">
+        <button id="load-more" style="background:#2a1844;color:#ffe8c2;border:1px solid #7f56aa;border-radius:8px;padding:8px 12px;cursor:pointer">Load older fortunes</button>
       </div>
     </div>
   </div>

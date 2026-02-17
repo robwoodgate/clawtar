@@ -4,7 +4,7 @@ Clawtar is an agent-first Cashu HTTP 402 demo:
 
 1. Agent calls `POST /v1/clawtar/ask`
 2. Server responds `402` with `x-cashu` containing a NUT-24 challenge (encoded NUT-18 `creqA...`)
-3. Agent settles payment and retries with `X-Cashu: <cashu-token>`
+3. Agent creates a Cashu token and retries with `X-Cashu: <cashu-token>`
 4. Server returns a paid fortune response
 
 ## Endpoint
